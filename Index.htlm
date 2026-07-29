@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Kolonnen-Netz Profi</title>
+    
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <link rel="apple-touch-icon" href="icon.png">
+    <link rel="icon" type="image/png" href="icon.png">
+    <link rel="manifest" href="manifest.json">
+
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    
+    <style>
+        :root { 
+            --primary: #e91e63; 
+            --secondary: #4caf50; 
+            --dark: #212121; 
+            --warning: #ff9800; 
+            --voice: #9c27b0;
+        }
+        body { font-family: 'Segoe UI', Roboto, sans-serif; margin: 0; padding: 0; background: #f0f2f5; color: var(--dark); overflow-x: hidden; }
+        
+        /* Header & Karte */
+        #status-bar { background: var(--dark); color: white; padding: 12px; text-align: center; font-size: 14px; font-weight: bold; position: sticky; top: 0; z-index: 1000; box-shadow: 0 2px 5px rgba(0,0,0,0.2); }
+        #map { height: 35vh; width: 100%; border-bottom: 4px solid var(--dark); }
+
+        /* Bedienfeld */
+        .controls { padding: 12px; display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+        .btn { border: none; color: white; padding: 18px; text-align: center; font-size: 16px; font-weight: bold; border-radius: 12px; cursor: pointer; transition: transform 0.1s; -webkit-tap-highlight-color: transparent; }
+        .btn:active { transform: scale(0.95); opacity: 0.9; }
+        
+        .btn-black { background: #333; }
+        .btn-blue { background: #1565c0; }
+        .btn-yellow { background: #fbc02d; color: black; }
+        .btn-brown { background: #6d4c41; }
+        
+        .btn-voice { background: var(--voice); grid-column: span 2; font-size: 18px; box-shadow: 0 4px 10px rgba(156, 39, 176, 0.3); }
+        .btn-voice.active { background: #e040fb; animation: pulse-voice 1.5s infinite; }
+        
+        .btn-ptt { background: var(--secondary); grid-column: span 2; font-size: 18px; }
+        .btn-fullservice { background: var(--primary); grid-column: span 2; border: 3px solid white; animation: pulse 2s infinite; }
+
+        @keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(233, 30, 99, 0.4); } 70% { box-shadow: 0 0 0 10px rgba(233, 30, 99, 0); } 100% { box-shadow: 0 0 0 0 rgba(233, 30, 99, 0); } }
+        @keyframes pulse-voice { 0% { opacity: 1; } 50% { opacity: 0.6; } 100% { opacity: 1; } }
+
+        /* Liste der Stellen */
+        .list-container { padding: 15px; background: white; margin: 10px; border-radius: 15px; box-shadow: 0 4px 10px rgba(0,0,0,0.05); min-height: 100px; }
+        h3 { margin: 0 0 10px 0; font-size: 18px; color: var(--primary); }
+        ul { list-style: none; padding: 0; margin: 0; }
+        li { background: #fff5f8; margin-bottom: 8px; padding: 12px; border-left: 6px solid var(--primary); border-radius: 8px; display: flex; justify-content: space-between; align-items: center; }
+        
+        /* Footer */
+        .footer { padding: 10px 15px 30px 15px; display: flex; flex-direction: column; gap: 10px; }
+        .btn-wa { background: #25D366; width: 100%; }
+        .btn-reset { background: var(--warning); width: 100%; padding: 10px; font-size: 13px; }
+    </style>
+</head>
+<body>
+
+<div id="status-bar">🛰️ GPS-Signal wird gesucht...</div>
+<div id="map"></div>
+
+<div class="controls">
+    <button class="btn btn-black" onclick="track('Restmüll')">Schwarz</button>
+    <button class="btn btn-blue" onclick="track('Papier')">Blau</button>
+    <button class="btn btn-yellow" onclick="track('Gelb')">Gelb</button>
+    <button class="btn btn-brown" onclick="track('Bio')">Braun</button>
+    
+    <button class="btn btn-voice" id="voice-btn" onclick="toggleVoiceControl()">🎙️ SPRACHSTEUERUNG STARTEN</button>
+    
+    <button class="btn btn-ptt" id="ptt" onmousedown="startV()" onmouseup="stopV()" ontouchstart="startV()" ontouchend="stopV()">🎤 FUNK (Halten)</button>
+    <button class="btn btn-fullservice" onclick="addFullService()">⭐ VOLL-SERVICE ERFASSEN</button>
+</div>
+
+<div class="list-container">
+    <h3>📋 Tour-Protokoll (Voll-Service)</h3>
+    <ul id="service-list">
+        <li id="empty-hint" style="color: #999; font-style: italic; border: none;">Noch keine Einträge...</li>
+    </ul>
+</div>
+
+<div class="footer">
+    <button class="btn btn-wa" onclick="shareWA()">📲 Bericht per WhatsApp</button>
+    <button class="btn btn-reset" onclick="clearAll()">🧹 Neue Schicht (Liste leeren)</button>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+    // 1. Karte & Standort
+    var map = L.map('map').setView([50.7753, 6.0839], 15); // Standard Aachen
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
+    var marker = L.circleMarker([50.7753, 6.0839], {color: '#1565c0', radius: 8, fillOpacity: 0.9}).addTo(map);
+
+    // 2. Speicher laden
+    document.addEventListener("DOMContentLoaded", () => {
+        const saved = localStorage.getItem("tourData");
+        if (saved) document.getElementById('service-list').innerHTML = saved;
+    });
+
+    function save() { localStorage.setItem("tourData", document.getElementById('service-list').innerHTML); }
+
+    // 3. Live GPS Tracker
+    if (navigator.geolocation) {
+        navigator.geolocation.watchPosition(p => {
+            const lat = p.coords.latitude, lon = p.coords.longitude;
+            marker.setLatLng([lat, lon]);
+            map.panTo([lat, lon]);
+            document.getElementById('status-bar').innerText = `📍 Aktiv: ${lat.toFixed(4)}, ${lon.toFixed(4)}`;
+        }, null, {enableHighAccuracy: true});
+    }
+
+    // 4. Kernfunktionen
+    function track(type) { 
+        speakText(type + " erfasst");
+        console.log(type + " erfasst!"); 
+    }
+
+    function addFullService() {
+        const pos = marker.getLatLng();
+        const time = new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+        
+        L.marker(pos, {
+            icon: L.divIcon({className: '', html: `<div style="background:var(--primary); color:white; border-radius:50%; width:30px; height:30px; display:flex; align-items:center; justify-content:center; border:2px solid white; box-shadow:0 2px 5px black;">⭐</div>`, iconSize:[30,30]})
+        }).addTo(map).bindPopup(`<b>Voll-Service</b><br>${time}`).openPopup();
+
+        const list = document.getElementById('service-list');
+        if (document.getElementById('empty-hint')) document.getElementById('empty-hint').remove();
+
+        const li = document.createElement('li');
+        li.innerHTML = `<span>📍 Haus (${pos.lat.toFixed(4)})<br><small>${time} Uhr</small></span>
+                        <button onclick="this.parentElement.style.opacity='0.4'; this.innerText='✅'; save();" style="background:var(--secondary); color:white; border:none; padding:8px; border-radius:6px; font-weight:bold;">ERLEDIGT</button>`;
+        list.prepend(li);
+        save();
+        
+        speakText("Vollservice gespeichert");
+    }
+
+    function shareWA() {
+        const items = document.querySelectorAll('#service-list li span');
+        if (items.length === 0) return alert("Die Liste ist leer!");
+        let text = "*🗑️ TAGESBERICHT VOLL-SERVICE*\n\n";
+        items.forEach((it, i) => text += `${i+1}. ${it.innerText.replace('\n', ' - ')}\n`);
+        window.open(`https://wa.me/?text=${encodeURIComponent(text + "\n✅ Tour erfolgreich beendet.")}`, '_blank');
+    }
+
+    function clearAll() {
+        if(confirm("Bist du sicher? Alle Einträge der heutigen Schicht werden gelöscht.")) { 
+            localStorage.removeItem("tourData"); 
+            location.reload(); 
+        }
+    }
+
+    function startV() { document.getElementById('ptt').style.background = "red"; }
+    function stopV() { document.getElementById('ptt').style.background = "var(--secondary)"; }
+
+    // 5. Sprachausgabe
+    function speakText(msg) {
+        if ('speechSynthesis' in window) {
+            const utterance = new SpeechSynthesisUtterance(msg);
+            utterance.lang = 'de-DE';
+            window.speechSynthesis.speak(utterance);
+        }
+    }
+
+    // 6. Spracherkennung
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    let recognizer = null;
+    let isListening = false;
+
+    if (SpeechRecognition) {
+        recognizer = new SpeechRecognition();
+        recognizer.lang = 'de-DE';
+        recognizer.continuous = true;
+        recognizer.interimResults = false;
+
+        recognizer.onresult = (event) => {
+            const last = event.results.length - 1;
+            const text = event.results[last][0].transcript.toLowerCase().trim();
+
+            if (text.includes("vollservice") || text.includes("voll service") || text.includes("stern")) {
+                addFullService();
+            } else if (text.includes("gelb") || text.includes("gelbe")) {
+                track('Gelbe Tonne');
+            } else if (text.includes("schwarz") || text.includes("restmüll")) {
+                track('Schwarze Tonne');
+            } else if (text.includes("blau") || text.includes("papier")) {
+                track('Papiertonne');
+            } else if (text.includes("braun") || text.includes("bio")) {
+                track('Biotonne');
+            }
+        };
+
+        recognizer.onend = () => {
+            if (isListening) recognizer.start();
+        };
+    }
+
+    function toggleVoiceControl() {
+        if (!recognizer) {
+            alert("Spracherkennung wird von diesem Browser leider nicht unterstützt.");
+            return;
+        }
+
+        const voiceBtn = document.getElementById('voice-btn');
+        if (!isListening) {
+            recognizer.start();
+            isListening = true;
+            voiceBtn.innerText = "🛑 SPRACHSTEUERUNG AKTIV (HÖRT ZU)";
+            voiceBtn.classList.add('active');
+            speakText("Sprachsteuerung aktiv");
+        } else {
+            isListening = false;
+            recognizer.stop();
+            voiceBtn.innerText = "🎙️ SPRACHSTEUERUNG STARTEN";
+            voiceBtn.classList.remove('active');
+            speakText("Sprachsteuerung aus");
+        }
+    }
+</script>
+
+</body>
+</html>
